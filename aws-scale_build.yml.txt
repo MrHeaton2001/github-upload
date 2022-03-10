@@ -1,0 +1,137 @@
+parameters:
+- name: awsRegion
+  displayName: AWS Region
+  type: string
+  default: us-west-2
+  values:
+  - us-west-2
+  - cn-north-1   
+- name: awsCredentials
+  displayName: AWS Service Connection Credentials
+  type: string
+  default: AWSDevNAServerlessDeploy
+  values:
+  - AWSDevNAServerlessDeploy
+  - AWSProdNAServerlessDeploy
+  - AWSProdCNServerlessDeploy 
+  - AWSDevCNServerlessDeploy   
+- name: pythonSettings
+  displayName: AWS Python Settings File
+  type: string
+  default: scale_settings_dev_v2.json
+  values:
+  - scale_settings_dev.json  
+  - scale_settings_dev_v2.json
+  - scale_settings_ua.json
+  - scale_settings_prod_rom.json 
+  - scale_settings_prod_eom.json
+  - scale_settings_CN_prod_rom.json 
+  - scale_settings_CN_prod_eom.json  
+- name: SetResources
+  displayName: Checking This Box Will Perform Changes Specified In Settings File
+  type: boolean
+  default: False     
+
+stages: 
+- stage:  Get_AWS_Resources 
+  jobs:
+  - deployment: Get_AWS_Resources
+    environment: Infra_Query
+    pool:
+      name: NA_Lower_Deploy
+    strategy:
+      runOnce:
+        deploy:
+          steps:
+          - bash: |
+              #Hostname determination for ssh
+              n="$(Agent.Name)"
+              agent_host=${n::-3}.melaleuca.net
+              echo "Starting task using container:$n on host:$agent_host"
+  
+            #   #Task to ssh onto host and get commit id
+            #   image_commit_id=`ssh -o StrictHostKeyChecking=no -i /azp/.ssh/ansible_rsa -tt svc_devopsansibledev@melaleuca.net@$agent_host cat /ansible/container_commit`
+  
+            #   echo $image_commit_id
+            #   echo "##vso[task.setvariable variable=container_image_commit_id;]$image_commit_id"
+            # displayName: 'Bash Script (Get Latest Container Image Commit ID)'
+
+          - task: AmazonWebServices.aws-vsts-tools.AWSShellScript.AWSShellScript@1
+            displayName: 'AWS Shell Script (Run Playbook)'
+            inputs:
+              awsCredentials: ${{ parameters.awsCredentials }}
+              regionName: ${{ parameters.awsRegion }}
+              scriptType: inline
+              inlineScript: |
+                #Hostname determination for ssh
+                n="$(Agent.Name)"
+                agent_host=${n::-3}.melaleuca.net
+                echo "Starting deployment using container:$n on host:$agent_host"
+                
+                #Task to spin up Ansible Container and run configuration
+                ssh -o StrictHostKeyChecking=no -i /azp/.ssh/ansible_rsa -tt svc_devopsansibledev@melaleuca.net@$agent_host \
+                "sudo podman run --rm -it --dns=10.1.2.132 --dns=10.1.2.133 \
+                  --ipc "container:krb5-kinit-sidecar" \
+                  --security-opt label=disable \
+                  --name ansible-aws-scaling \
+                  --mount type=bind,source=/ansible/config/production/ansible.cfg,target=/etc/ansible/ansible.cfg \
+                  --mount type=bind,source=/ansible/playbooks/aws-infrastructure,target=/ansible \
+                  --mount type=bind,source=/ansible/axiom,target=/ansible/vault/file devops/ansible-container/psrp-windows-controller:latest \
+                      ansible-playbook --vault-password-file /ansible/vault/file /ansible/aws-scaling.yml \
+                        -e 'aws_python_settings_file_=${{ parameters.pythonSettings }}' \
+                        -e 'report_only_=true' \
+                        -e 'aws_region_=$AWS_REGION' \
+                        -e 'aws_accesskey_id_=$AWS_ACCESS_KEY_ID' \
+                        -e 'aws_secret_accesskey_=$AWS_SECRET_ACCESS_KEY'" 
+
+- stage:  Set_AWS_Resources
+  condition: eq('${{ parameters.SetResources }}', 'True')
+  jobs:
+  - deployment: Set_AWS_Resources
+    environment: Infrastructure
+    pool:
+      name: NA_Lower_Deploy
+    strategy:
+      runOnce:
+        deploy:
+          steps:       
+          - bash: |
+              #Hostname determination for ssh
+              n="$(Agent.Name)"
+              agent_host=${n::-3}.melaleuca.net
+              echo "Starting task using container:$n on host:$agent_host"
+  
+              #Task to ssh onto host and get commit id
+              image_commit_id=`ssh -o StrictHostKeyChecking=no -i /azp/.ssh/ansible_rsa -tt svc_devopsansibledev@melaleuca.net@$agent_host cat /ansible/container_commit`
+  
+              echo $image_commit_id
+              echo "##vso[task.setvariable variable=container_image_commit_id;]$image_commit_id"
+            displayName: 'Bash Script (Get Latest Container Image Commit ID)'
+
+          - task: AmazonWebServices.aws-vsts-tools.AWSShellScript.AWSShellScript@1
+            displayName: 'AWS Shell Script (Run Playbook)'
+            inputs:
+              awsCredentials: ${{ parameters.awsCredentials }}
+              regionName: ${{ parameters.awsRegion }}
+              scriptType: inline
+              inlineScript: |
+                #Hostname determination for ssh
+                n="$(Agent.Name)"
+                agent_host=${n::-3}.melaleuca.net
+                echo "Starting deployment using container:$n on host:$agent_host"
+                
+                #Task to spin up Ansible Container and run configuration
+                ssh -o StrictHostKeyChecking=no -i /azp/.ssh/ansible_rsa -tt svc_devopsansibledev@melaleuca.net@$agent_host \
+                "sudo podman run --rm -it --dns=10.1.2.132 --dns=10.1.2.133 \
+                  --ipc "container:krb5-kinit-sidecar" \
+                  --security-opt label=disable \
+                  --name ansible-aws-scaling \
+                  --mount type=bind,source=/ansible/config/production/ansible.cfg,target=/etc/ansible/ansible.cfg \
+                  --mount type=bind,source=/ansible/playbooks/aws-infrastructure,target=/ansible \
+                  --mount type=bind,source=/ansible/axiom,target=/ansible/vault/file devops/ansible-container/psrp-windows-controller:latest \
+                      ansible-playbook --vault-password-file /ansible/vault/file /ansible/aws-scaling.yml \
+                        -e 'aws_python_settings_file_=${{ parameters.pythonSettings }}' \
+                        -e 'report_only_=false' \
+                        -e 'aws_region_=$AWS_REGION' \
+                        -e 'aws_accesskey_id_=$AWS_ACCESS_KEY_ID' \
+                        -e 'aws_secret_accesskey_=$AWS_SECRET_ACCESS_KEY'"                         

@@ -1,0 +1,85 @@
+parameters:
+  agentPool: ''
+  awsCredentials: ''
+  awsRegion: ''
+  envFullName: ''
+  marketShort: ''
+  envShort: ''
+  projectName: ''
+  imageName: ''
+  imageTag: ''
+  ecrRepoName: ''
+  ecsServiceName: ''
+  ecsClusterName: 'ECS-Fargate-Cluster'
+  folderPath: ''
+  pathToProjects: ''
+  pathToTestProjects: ''
+  buildConfiguration: 'Release'
+  projectFolderPath: ''
+
+jobs:
+- deployment: Push_to_ECR
+  pool:
+    name: ${{ parameters.agentPool }}
+  environment: ${{ parameters.marketShort }}-${{ parameters.envShort }}
+  strategy:
+    runOnce:
+      deploy:
+        steps:
+        - checkout: self
+          clean: true
+          persistCredentials: true
+
+        - task: DotNetCoreCLI@2
+          displayName: Restore
+          inputs:
+            command: restore
+            projects: ${{ parameters.pathToProjects }}
+
+        - task: Bash@3
+          displayName: Publish
+          inputs:
+            targetType: 'inline'
+            script: |
+              cd ${{ parameters.projectFolderPath }}
+              dotnet publish -c ${{ parameters.buildConfiguration }}
+
+        - task: Bash@3
+          displayName: Docker Build
+          inputs:
+            targetType: 'inline'
+            script: 'docker build -t ${{ parameters.imageName }}:${{ parameters.imageTag }} ${{ parameters.projectFolderPath }}'
+
+        # Push to ECR
+        - task: ECRPushImage@1
+          displayName: ECR push ${{ parameters.imageTag }} tag
+          inputs:
+            awsCredentials: '${{ parameters.awsCredentials }}'
+            regionName: '${{ parameters.awsRegion }}'
+            imageSource: 'imagename'
+            sourceImageName: '${{ parameters.imageName }}'
+            sourceImageTag: '${{ parameters.imageTag }}'
+            repositoryName: '${{ parameters.ecrRepoName }}'
+            pushTag: '${{ parameters.imageTag }}'
+            autoCreateRepository: true
+            forceDockerNamingConventions: true
+
+        - task: AWSCLI@1
+          displayName: ECS Service Update ${{ parameters.envFullName }}
+          inputs:
+            awsCredentials: '${{ parameters.awsCredentials }}'
+            regionName: '${{ parameters.awsRegion }}'
+            awsCommand: 'ecs'
+            awsSubCommand: 'update-service'
+            awsArguments: '--cluster ${{ parameters.ecsClusterName }} --service ${{ parameters.ecsServiceName }}-${{ parameters.envFullName }} --force-new-deployment'
+
+        - task: Bash@3
+          displayName: Docker Image Cleanup
+          inputs:
+            targetType: 'inline'
+            script: |
+              IMAGES_TO_DELETE=$( aws ecr list-images --region ${{ parameters.awsRegion }} --repository-name ${{ parameters.ecrRepoName }} --filter "tagStatus=UNTAGGED" --query 'imageIds[*]' --output json )
+              aws ecr batch-delete-image --region ${{ parameters.awsRegion }} --repository-name ${{ parameters.ecrRepoName }} --image-ids "$IMAGES_TO_DELETE" || true
+              docker image rm ${{ parameters.imageName }}:${{ parameters.imageTag }}
+              docker image prune -f
+          continueOnError: true
